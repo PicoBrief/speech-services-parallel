@@ -1,0 +1,51 @@
+{
+    "name": "@pico-brief/speech-services-parallel",
+    "version": "1.0.0",
+    "description": "Parallel STT/TTS orchestration with credential rotation, built on @pico-brief/speech-services",
+    "type": "module",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "test": "npm run build && tsx --test test/*.test.ts",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/PicoBrief/speech-services-parallel.git"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "keywords": [
+        "speech-to-text",
+        "text-to-speech",
+        "stt",
+        "tts",
+        "parallel",
+        "credential-rotation",
+        "transcription",
+        "speech-synthesis"
+    ],
+    "license": "MIT",
+    "dependencies": {
+        "@pico-brief/audio-duration": "^1.0.0",
+        "@pico-brief/speech-services": "^1.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "dotenv": "^17.3.1",
+        "tsx": "^4.21.0",
+        "typescript": "^5.0.0"
+    }
+}
