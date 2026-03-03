@@ -248,6 +248,40 @@ const promise = transcribeParallel({
 setTimeout(() => controller.abort(), 30_000);
 ```
 
+### Storage provider (for URL-based transcription)
+
+Some providers require audio to be available at a URL rather than sent as a buffer — for example, Azure in batch mode or Google's async long-running recognition. You can supply a `storageProvider` to handle this automatically:
+
+```ts
+import type { StorageProvider } from "@pico-brief/speech-services-parallel";
+
+const storageProvider: StorageProvider = {
+  async upload(buffer, key) {
+    // Upload to your cloud storage (Azure Blob, GCS, S3, etc.)
+    // and return a URL the provider can fetch
+    await blobClient.upload(buffer, key);
+    return `https://mystorage.blob.core.windows.net/audio/${key}?${sasToken}`;
+  },
+  async delete(key) {
+    // Clean up — called automatically after transcription completes
+    await blobClient.delete(key);
+  },
+};
+
+const result = await transcribeParallel({
+  provider: "azure",
+  credentials: [{ subscriptionKey: "...", region: "eastus" }],
+  providerOptions: { mode: "batch" },
+  audio,
+  ffmpegPath: "ffmpeg",
+  storageProvider,
+});
+```
+
+Each audio chunk is uploaded before transcription and deleted in a `finally` block, so cleanup happens even if transcription fails. The upload happens outside the retry loop — if a chunk needs to be retried, it reuses the same URL.
+
+If you use Azure with `mode: "batch"` and don't provide a `storageProvider`, the library throws an error immediately.
+
 ### Provider-specific options
 
 Each provider supports extra options through `providerOptions`. These are passed directly to the underlying provider client:
@@ -311,6 +345,7 @@ Transcribes audio with automatic chunking and parallel processing.
 | `signal` | `AbortSignal` | No | — | Signal to cancel the operation |
 | `onProgress` | `(completed, total) => void` | No | — | Progress callback |
 | `providerOptions` | `object` | No | — | Provider-specific options |
+| `storageProvider` | `StorageProvider` | No | — | Upload chunks to cloud storage for URL-based providers |
 
 **Returns:** `Promise<TranscribeResult>` with `text`, `words`, `language`, and `duration`.
 

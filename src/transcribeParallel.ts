@@ -23,7 +23,7 @@ import { withRetry } from "./retry.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { generateRandomString, formatTimestamp, bufferToArrayBuffer } from "./helpers.js";
 import { detectAudioFormat, audioFormatToExtension } from "./audioFormat.js";
-import type { TranscribeParallelParams, TranscribeCredential } from "./types.js";
+import type { TranscribeParallelParams, TranscribeCredential, StorageProvider } from "./types.js";
 
 const commander = promisify(exec);
 
@@ -61,21 +61,45 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
 
     const provider = params.provider;
     const providerOptions = params.providerOptions;
+    const storageProvider: StorageProvider | undefined = params.storageProvider;
+
+    // Validate: Azure batch mode requires a storageProvider
+    if (
+        provider === "azure" &&
+        providerOptions &&
+        "mode" in providerOptions &&
+        (providerOptions as Record<string, unknown>).mode === "batch" &&
+        !storageProvider
+    ) {
+        throw new Error("Azure batch transcription requires a storageProvider to upload audio chunks.");
+    }
 
     const keyManager = new KeyManager<TranscribeCredential>(params.credentials as TranscribeCredential[]);
+    const sessionId = generateRandomString();
+    const uploadedKeys: string[] = [];
 
     /**
-     * Transcribes a single audio buffer using the provider with automatic retry
-     * and credential rotation.
+     * Transcribes a single audio chunk. If a storageProvider is configured, the
+     * buffer is uploaded first and the resulting URL is passed as `audio`.
+     * Upload happens outside the retry loop so it is only done once.
      */
-    const transcribeBuffer = (buffer: Buffer): Promise<TranscribeResult> => {
+    const transcribeChunk = async (buffer: Buffer, chunkIndex: number): Promise<TranscribeResult> => {
+        let audioInput: Buffer | string = buffer;
+
+        if (storageProvider) {
+            const key = `${sessionId}_chunk_${chunkIndex}`;
+            const url = await storageProvider.upload(buffer, key);
+            uploadedKeys.push(key);
+            audioInput = url;
+        }
+
         return withRetry(
             { keyManager, retryTimeoutMs, signal, operationName: "Transcription" },
             (credential) => {
                 const client = createClientFromCredential(provider, credential);
                 return client.transcribe({
                     provider,
-                    audio: buffer,
+                    audio: audioInput,
                     languages,
                     providerOptions,
                 } as unknown as TranscribeParams);
@@ -87,69 +111,76 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
     const totalDuration = getAudioDuration(bufferToArrayBuffer(audio));
     const numChunks = Math.max(1, Math.round(totalDuration / targetChunkDuration));
 
-    // Single chunk — transcribe directly, no ffmpeg splitting needed
-    if (numChunks === 1) return transcribeBuffer(audio);
-
-    // Multiple chunks — split the audio file and transcribe each piece
-    const ext = audioFormatToExtension(detectAudioFormat(audio));
-    const tmpPrefix = path.join(workdir, generateRandomString());
-    const srcFile = `${tmpPrefix}_src.${ext}`;
-    const tmpFiles: string[] = [srcFile];
-
     try {
-        fs.writeFileSync(srcFile, audio);
+        // Single chunk — transcribe directly, no ffmpeg splitting needed
+        if (numChunks === 1) return await transcribeChunk(audio, 0);
 
-        // D = ideal duration of each chunk (before adding overlap)
-        const D = totalDuration / numChunks;
+        // Multiple chunks — split the audio file and transcribe each piece
+        const ext = audioFormatToExtension(detectAudioFormat(audio));
+        const tmpPrefix = path.join(workdir, generateRandomString());
+        const srcFile = `${tmpPrefix}_src.${ext}`;
+        const tmpFiles: string[] = [srcFile];
 
-        // Build chunk file paths and ownership boundaries
-        const chunkFiles: string[] = [];
-        const chunkMetas: { ownedStart: number; ownedEnd: number }[] = [];
+        try {
+            fs.writeFileSync(srcFile, audio);
 
-        for (let i = 0; i < numChunks; i++) {
-            const chunkFile = `${tmpPrefix}_chunk_${i}.${ext}`;
-            tmpFiles.push(chunkFile);
-            chunkFiles.push(chunkFile);
+            // D = ideal duration of each chunk (before adding overlap)
+            const D = totalDuration / numChunks;
 
-            // Each chunk "owns" a time range. Words outside this range are discarded
-            // during merge to eliminate duplicates from overlapping regions.
-            const ownedStart = i * D;
-            const ownedEnd = i < numChunks - 1 ? (i + 1) * D : Infinity;
-            chunkMetas.push({ ownedStart, ownedEnd });
+            // Build chunk file paths and ownership boundaries
+            const chunkFiles: string[] = [];
+            const chunkMetas: { ownedStart: number; ownedEnd: number }[] = [];
+
+            for (let i = 0; i < numChunks; i++) {
+                const chunkFile = `${tmpPrefix}_chunk_${i}.${ext}`;
+                tmpFiles.push(chunkFile);
+                chunkFiles.push(chunkFile);
+
+                // Each chunk "owns" a time range. Words outside this range are discarded
+                // during merge to eliminate duplicates from overlapping regions.
+                const ownedStart = i * D;
+                const ownedEnd = i < numChunks - 1 ? (i + 1) * D : Infinity;
+                chunkMetas.push({ ownedStart, ownedEnd });
+            }
+
+            // Slice all chunks in parallel via ffmpeg (each writes to a separate file).
+            // Slices extend beyond the owned range by `chunkOverlap` on each side so
+            // that words straddling chunk boundaries are captured by both neighbors.
+            await Promise.all(
+                chunkFiles.map((chunkFile, i) => {
+                    const sliceStart = Math.max(0, i * D - chunkOverlap);
+                    const sliceEnd = Math.min(totalDuration, (i + 1) * D + chunkOverlap);
+                    const startTs = formatTimestamp(sliceStart);
+                    const endTs = formatTimestamp(sliceEnd);
+                    return commander(`"${ffmpegPath}" -ss ${startTs} -to ${endTs} -i "${srcFile}" -c copy "${chunkFile}"`);
+                }),
+            );
+
+            // Transcribe each chunk with optional concurrency limiting
+            let completed = 0;
+            const chunkBoundaries = await mapWithConcurrency(
+                chunkFiles,
+                async (chunkFile, i): Promise<ChunkBoundary> => {
+                    const chunkBuffer = fs.readFileSync(chunkFile);
+                    const result = await transcribeChunk(chunkBuffer, i);
+                    onProgress?.(++completed, numChunks);
+                    return { result, ownedStart: chunkMetas[i].ownedStart, ownedEnd: chunkMetas[i].ownedEnd };
+                },
+                maxConcurrency,
+            );
+
+            // Merge all chunk results, deduplicating words at overlap boundaries
+            return mergeTranscribeResults(chunkBoundaries);
+        } finally {
+            // Clean up all temporary files regardless of success or failure
+            for (const f of tmpFiles) {
+                try { fs.unlinkSync(f); } catch { /* ignore cleanup errors */ }
+            }
         }
-
-        // Slice all chunks in parallel via ffmpeg (each writes to a separate file).
-        // Slices extend beyond the owned range by `chunkOverlap` on each side so
-        // that words straddling chunk boundaries are captured by both neighbors.
-        await Promise.all(
-            chunkFiles.map((chunkFile, i) => {
-                const sliceStart = Math.max(0, i * D - chunkOverlap);
-                const sliceEnd = Math.min(totalDuration, (i + 1) * D + chunkOverlap);
-                const startTs = formatTimestamp(sliceStart);
-                const endTs = formatTimestamp(sliceEnd);
-                return commander(`"${ffmpegPath}" -ss ${startTs} -to ${endTs} -i "${srcFile}" -c copy "${chunkFile}"`);
-            }),
-        );
-
-        // Transcribe each chunk with optional concurrency limiting
-        let completed = 0;
-        const chunkBoundaries = await mapWithConcurrency(
-            chunkFiles,
-            async (chunkFile, i): Promise<ChunkBoundary> => {
-                const chunkBuffer = fs.readFileSync(chunkFile);
-                const result = await transcribeBuffer(chunkBuffer);
-                onProgress?.(++completed, numChunks);
-                return { result, ownedStart: chunkMetas[i].ownedStart, ownedEnd: chunkMetas[i].ownedEnd };
-            },
-            maxConcurrency,
-        );
-
-        // Merge all chunk results, deduplicating words at overlap boundaries
-        return mergeTranscribeResults(chunkBoundaries);
     } finally {
-        // Clean up all temporary files regardless of success or failure
-        for (const f of tmpFiles) {
-            try { fs.unlinkSync(f); } catch { /* ignore cleanup errors */ }
+        // Clean up uploaded storage objects regardless of success or failure
+        for (const key of uploadedKeys) {
+            try { await storageProvider?.delete(key); } catch { /* ignore cleanup errors */ }
         }
     }
 }

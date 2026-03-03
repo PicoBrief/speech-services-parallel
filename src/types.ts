@@ -84,6 +84,21 @@ export interface SynthesizeProviderOptionsMap {
     playht: PlayHTSynthesizeOptions;
 }
 
+// ─── Storage provider ───────────────────────────────────────────────────────
+
+/**
+ * Abstraction for uploading audio chunks to cloud storage so that URL-based
+ * transcription providers (e.g. Azure batch, Google async) can fetch them.
+ *
+ * Users supply their own implementation — the library never pulls in cloud SDKs.
+ */
+export interface StorageProvider {
+    /** Upload a buffer and return a URL the provider can fetch. */
+    upload(buffer: Buffer, key: string): Promise<string>;
+    /** Delete a previously uploaded file. Should no-op on missing files. */
+    delete(key: string): Promise<void>;
+}
+
 // ─── Transcribe parallel params ─────────────────────────────────────────────
 
 /** Shared (provider-agnostic) fields for {@link TranscribeParallelParams}. */
@@ -106,6 +121,12 @@ type TranscribeParallelBase = {
     signal?: AbortSignal;
     /** Called each time a chunk finishes. `completed` counts up to `total`. */
     onProgress?: (completed: number, total: number) => void;
+    /**
+     * Optional storage provider for URL-based transcription modes (e.g. Azure batch, Google async).
+     * When provided, audio chunks are uploaded via this provider and the resulting URL is passed
+     * to the transcription service instead of the raw buffer.
+     */
+    storageProvider?: StorageProvider;
 };
 
 /**

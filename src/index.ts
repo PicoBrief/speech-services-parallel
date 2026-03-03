@@ -18,6 +18,7 @@ export type {
     SynthesizeParallelResult,
     SynthesizeChunkInput,
     SynthesizeChunkResult,
+    StorageProvider,
 } from "./types.js";
 
 export type { ChunkBoundary } from "./merge.js";
