@@ -127,30 +127,24 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
             // D = ideal duration of each chunk (before adding overlap)
             const D = totalDuration / numChunks;
 
-            // Build chunk file paths and ownership boundaries
+            // Build chunk file paths and compute each slice's start offset
             const chunkFiles: string[] = [];
-            const chunkMetas: { ownedStart: number; ownedEnd: number }[] = [];
+            const sliceStarts: number[] = [];
 
             for (let i = 0; i < numChunks; i++) {
                 const chunkFile = `${tmpPrefix}_chunk_${i}.${ext}`;
                 tmpFiles.push(chunkFile);
                 chunkFiles.push(chunkFile);
-
-                // Each chunk "owns" a time range. Words outside this range are discarded
-                // during merge to eliminate duplicates from overlapping regions.
-                const ownedStart = i * D;
-                const ownedEnd = i < numChunks - 1 ? (i + 1) * D : Infinity;
-                chunkMetas.push({ ownedStart, ownedEnd });
+                sliceStarts.push(Math.max(0, i * D - chunkOverlap));
             }
 
             // Slice all chunks in parallel via ffmpeg (each writes to a separate file).
-            // Slices extend beyond the owned range by `chunkOverlap` on each side so
+            // Slices extend beyond the ideal range by `chunkOverlap` on each side so
             // that words straddling chunk boundaries are captured by both neighbors.
             await Promise.all(
                 chunkFiles.map((chunkFile, i) => {
-                    const sliceStart = Math.max(0, i * D - chunkOverlap);
                     const sliceEnd = Math.min(totalDuration, (i + 1) * D + chunkOverlap);
-                    const startTs = formatTimestamp(sliceStart);
+                    const startTs = formatTimestamp(sliceStarts[i]);
                     const endTs = formatTimestamp(sliceEnd);
                     return commander(`"${ffmpegPath}" -ss ${startTs} -to ${endTs} -i "${srcFile}" -c copy "${chunkFile}"`);
                 }),
@@ -164,7 +158,7 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
                     const chunkBuffer = fs.readFileSync(chunkFile);
                     const result = await transcribeChunk(chunkBuffer, i);
                     onProgress?.(++completed, numChunks);
-                    return { result, ownedStart: chunkMetas[i].ownedStart, ownedEnd: chunkMetas[i].ownedEnd };
+                    return { result, offset: sliceStarts[i] };
                 },
                 maxConcurrency,
             );
