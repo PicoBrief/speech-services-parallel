@@ -1,6 +1,6 @@
 {
     "name": "@pico-brief/speech-services-parallel",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Parallel STT/TTS orchestration with credential rotation, built on @pico-brief/speech-services",
     "type": "module",
     "main": "dist/index.js",
