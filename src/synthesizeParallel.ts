@@ -57,7 +57,7 @@ const workdir = os.tmpdir();
 export async function synthesizeParallel(params: SynthesizeParallelParams): Promise<SynthesizeParallelResult> {
     const { chunks, ffmpegPath } = params;
     const retryTimeoutMs = params.retryTimeoutMs ?? 5 * 60 * 1000;
-    const { onProgress, signal, maxConcurrency } = params;
+    const { onProgress, signal, maxConcurrency, hedgeAfterMs, maxHedges } = params;
 
     const provider = params.provider;
     const defaultGender = params.gender;
@@ -83,7 +83,7 @@ export async function synthesizeParallel(params: SynthesizeParallelParams): Prom
                     : defaultProviderOptions;
 
                 const result = await withRetry(
-                    { keyManager, retryTimeoutMs, signal, operationName: "Synthesis" },
+                    { keyManager, retryTimeoutMs, signal, operationName: "Synthesis", hedgeAfterMs, maxHedges },
                     (credential) => {
                         const client = createClientFromCredential(provider, credential);
                         return client.synthesize({

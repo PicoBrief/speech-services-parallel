@@ -229,6 +229,36 @@ const result = await synthesizeParallel({
 
 Errors like invalid API keys (401, 403) or bad input (400, 422) are **not** retried — only transient errors (429, 500, 502, 503, 504) are.
 
+### Hedged requests
+
+Sometimes a request takes unusually long but may eventually succeed. Hedged requests let you speculatively launch additional requests if the original hasn't completed after a configurable delay. The first successful response wins and all others are cancelled.
+
+```ts
+const result = await transcribeParallel({
+  provider: "azure",
+  credentials: [
+    { subscriptionKey: "key-1", region: "eastus" },
+    { subscriptionKey: "key-2", region: "westus" },
+    { subscriptionKey: "key-3", region: "westeurope" },
+  ],
+  audio,
+  ffmpegPath: "ffmpeg",
+  hedgeAfterMs: 10_000, // launch a hedge if no result after 10 seconds
+  maxHedges: 2,         // up to 2 additional requests
+});
+```
+
+With the above settings:
+
+1. **t=0s** — Original request starts with credential 1.
+2. **t=10s** — No result yet. Hedge #1 starts with credential 2. Original keeps running.
+3. **t=20s** — Still no result. Hedge #2 starts with credential 3. All previous requests keep running.
+4. The first request to succeed wins. All others are cancelled.
+
+Hedging is disabled by default. When `hedgeAfterMs` is not set, behavior is identical to previous versions. Each hedge runs its own independent retry loop — hedging (triggered by slowness) and retrying (triggered by failure) are separate mechanisms.
+
+If a hedge fails with a terminal error (e.g. 401, 403), only that hedge stops — the others keep running. If all hedges fail, the error from the most recent attempt is thrown.
+
 ### Cancellation
 
 Pass an `AbortSignal` to cancel an in-progress operation:
@@ -346,6 +376,8 @@ Transcribes audio with automatic chunking and parallel processing.
 | `onProgress` | `(completed, total) => void` | No | — | Progress callback |
 | `providerOptions` | `object` | No | — | Provider-specific options |
 | `storageProvider` | `StorageProvider` | No | — | Upload chunks to cloud storage for URL-based providers |
+| `hedgeAfterMs` | `number` | No | — | Time (ms) before launching a hedge request. Disabled when not set |
+| `maxHedges` | `number` | No | `1` | Max additional hedge requests per chunk |
 
 **Returns:** `Promise<TranscribeResult>` with `text`, `words`, `language`, and `duration`.
 
@@ -371,6 +403,8 @@ Synthesizes multiple text chunks into audio in parallel.
 | `signal` | `AbortSignal` | No | — | Signal to cancel the operation |
 | `onProgress` | `(completed, total) => void` | No | — | Progress callback |
 | `providerOptions` | `object` | No | — | Default provider-specific options |
+| `hedgeAfterMs` | `number` | No | — | Time (ms) before launching a hedge request. Disabled when not set |
+| `maxHedges` | `number` | No | `1` | Max additional hedge requests per chunk |
 
 **Returns:** `Promise<SynthesizeParallelResult>`
 

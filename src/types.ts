@@ -127,6 +127,10 @@ type TranscribeParallelBase = {
      * to the transcription service instead of the raw buffer.
      */
     storageProvider?: StorageProvider;
+    /** Time in ms to wait before launching a hedge request. When undefined, hedging is disabled. */
+    hedgeAfterMs?: number;
+    /** Maximum number of additional hedge requests per chunk. @default 1 */
+    maxHedges?: number;
 };
 
 /**
@@ -210,6 +214,10 @@ type SynthesizeParallelBase = {
     signal?: AbortSignal;
     /** Called each time a chunk finishes. `completed` counts up to `total`. */
     onProgress?: (completed: number, total: number) => void;
+    /** Time in ms to wait before launching a hedge request. When undefined, hedging is disabled. */
+    hedgeAfterMs?: number;
+    /** Maximum number of additional hedge requests per chunk. @default 1 */
+    maxHedges?: number;
 };
 
 /**

@@ -57,7 +57,7 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
     const targetChunkDuration = params.targetChunkDuration ?? 300;
     const chunkOverlap = params.chunkOverlap ?? 15;
     const retryTimeoutMs = params.retryTimeoutMs ?? 5 * 60 * 1000;
-    const { onProgress, signal, maxConcurrency } = params;
+    const { onProgress, signal, maxConcurrency, hedgeAfterMs, maxHedges } = params;
 
     const provider = params.provider;
     const providerOptions = params.providerOptions;
@@ -94,7 +94,7 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
         }
 
         return withRetry(
-            { keyManager, retryTimeoutMs, signal, operationName: "Transcription" },
+            { keyManager, retryTimeoutMs, signal, operationName: "Transcription", hedgeAfterMs, maxHedges },
             (credential) => {
                 const client = createClientFromCredential(provider, credential);
                 return client.transcribe({
