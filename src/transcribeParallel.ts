@@ -132,7 +132,7 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
             const sliceStarts: number[] = [];
 
             for (let i = 0; i < numChunks; i++) {
-                const chunkFile = `${tmpPrefix}_chunk_${i}.${ext}`;
+                const chunkFile = `${tmpPrefix}_chunk_${i}.wav`;
                 tmpFiles.push(chunkFile);
                 chunkFiles.push(chunkFile);
                 sliceStarts.push(Math.max(0, i * D - chunkOverlap));
@@ -146,7 +146,7 @@ export async function transcribeParallel(params: TranscribeParallelParams): Prom
                     const sliceEnd = Math.min(totalDuration, (i + 1) * D + chunkOverlap);
                     const startTs = formatTimestamp(sliceStarts[i]);
                     const endTs = formatTimestamp(sliceEnd);
-                    return commander(`"${ffmpegPath}" -ss ${startTs} -to ${endTs} -i "${srcFile}" -c copy "${chunkFile}"`);
+                    return commander(`"${ffmpegPath}" -ss ${startTs} -to ${endTs} -i "${srcFile}" -acodec pcm_s16le -ar 16000 -ac 1 "${chunkFile}"`);
                 }),
             );
 
